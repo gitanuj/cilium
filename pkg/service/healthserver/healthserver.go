@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync/atomic"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/pires/go-proxyproto"
 )
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "service-healthserver")
@@ -178,24 +180,36 @@ func (h *httpHealthHTTPServerFactory) newHTTPHealthServer(port uint16, svc *Serv
 			logfields.ServiceHealthCheckNodePort: port,
 		}).Debug("Starting new service health server")
 
-		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.listenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			svc := srv.loadService()
 			if errors.Is(err, unix.EADDRINUSE) {
 				log.WithError(err).WithFields(logrus.Fields{
 					logfields.ServiceName:                svc.Service.Name,
 					logfields.ServiceNamespace:           svc.Service.Namespace,
 					logfields.ServiceHealthCheckNodePort: port,
-				}).Errorf("ListenAndServe failed for service health server, since the user might be running with kube-proxy. Please ensure that '--%s' option is set to false if kube-proxy is running.", option.EnableHealthCheckNodePort)
+				}).Errorf("listenAndServe failed for service health server, since the user might be running with kube-proxy. Please ensure that '--%s' option is set to false if kube-proxy is running.", option.EnableHealthCheckNodePort)
 			}
 			log.WithError(err).WithFields(logrus.Fields{
 				logfields.ServiceName:                svc.Service.Name,
 				logfields.ServiceNamespace:           svc.Service.Namespace,
 				logfields.ServiceHealthCheckNodePort: port,
-			}).Error("ListenAndServe failed for service health server")
+			}).Error("listenAndServe failed for service health server")
 		}
 	}()
 
 	return srv
+}
+
+func (h *httpHealthServer) listenAndServe() error {
+	ln, err := net.Listen("tcp", h.Server.Addr)
+	if err != nil {
+		return err
+	}
+
+	proxyListener := &proxyproto.Listener{
+		Listener: ln,
+	}
+	return h.Server.Serve(proxyListener)
 }
 
 func (h *httpHealthServer) loadService() *Service {
